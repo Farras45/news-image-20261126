@@ -1,21 +1,225 @@
-// news-image-20261126 — "The World in One Day: Thursday 26 November 2026".
-// A newspaper front page drawn from scratch in Node stdlib only: own PNG encoder
-// (zlib + CRC32, truecolour RGB, 1024x1024), own 5x7 bitmap font, own vector
-// drawing helpers. No network, no assets, no copied code. Deterministic output:
-// the same bytes on every run.
-//
-// Content: 34 stories, every one verified as having happened, or first reported,
-// on Thursday 26 November 2026 (sources named per story). A DATE CHECK box lists
-// the big 23-25 Nov stories deliberately left out, so the day stays clean.
-//
-// Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// THE WORLD IN ONE DAY - THURSDAY 26 NOVEMBER 2026
+// A one-page newspaper front page rendered from scratch in pure Node 22
+// (standard library only: no network, no fonts, no image assets).
+// The program draws 36 dated, sourced stories from 26 Nov 2026 into a
+// 1024x1024 PNG and writes it to /output/entry.png
+// (or $MAKEFUN_OUTPUT_DIR/entry.png when set, per the kit convention).
+// Everything is computed here: a hand-built 5x7 bitmap font, a raster
+// canvas, a coarse world map, small vector scenes, and a hand-rolled
+// PNG encoder (CRC32 + zlib deflate). The output is fully deterministic.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 
-// ---------------------------------------------------------------- PNG encoder
+// ------------------------------------------------------------------ font ---
+// 5x7 bitmap font, uppercase only (newspaper style). Each glyph is 7 rows
+// of 5 bits, written as strings of '1' (ink) and '0' (paper).
+const FONT: Record<string, string[]> = {
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
+  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+  W: ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
+  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
+  '3': ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
+  '.': ['00000', '00000', '00000', '00000', '00000', '01100', '01100'],
+  ',': ['00000', '00000', '00000', '00000', '01100', '00100', '01000'],
+  ':': ['00000', '01100', '01100', '00000', '01100', '01100', '00000'],
+  ';': ['00000', '01100', '01100', '00000', '01100', '00100', '01000'],
+  "'": ['00100', '00100', '01000', '00000', '00000', '00000', '00000'],
+  '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
+  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
+  '-': ['00000', '00000', '00000', '01110', '00000', '00000', '00000'],
+  '(': ['00010', '00100', '01000', '01000', '01000', '00100', '00010'],
+  ')': ['01000', '00100', '00010', '00010', '00010', '00100', '01000'],
+  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+  '&': ['01100', '10010', '10100', '01000', '10101', '10010', '01101'],
+  '%': ['11001', '11010', '00010', '00100', '01000', '01011', '10011'],
+  '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
+  '=': ['00000', '00000', '11111', '00000', '11111', '00000', '00000'],
+  '*': ['00000', '10101', '01110', '11111', '01110', '10101', '00000'],
+  '"': ['01010', '01010', '01010', '00000', '00000', '00000', '00000'],
+  $: ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
+  '#': ['01010', '01010', '11111', '01010', '11111', '01010', '01010'],
+  '@': ['01110', '10001', '10111', '10101', '10110', '10000', '01110'],
+  '<': ['00010', '00100', '01000', '10000', '01000', '00100', '00010'],
+  '>': ['01000', '00100', '00010', '00001', '00010', '00100', '01000'],
+  '[': ['01110', '01000', '01000', '01000', '01000', '01000', '01110'],
+  ']': ['01110', '00010', '00010', '00010', '00010', '00010', '01110'],
+  _: ['00000', '00000', '00000', '00000', '00000', '00000', '11111'],
+  '|': ['00100', '00100', '00100', '00100', '00100', '00100', '00100'],
+  '\\': ['10000', '01000', '01000', '00100', '00010', '00010', '00001'],
+  '^': ['00100', '01010', '10001', '00000', '00000', '00000', '00000'],
+  '·': ['00000', '00000', '00000', '01100', '01100', '00000', '00000'],
+  '•': ['00000', '00000', '01100', '01100', '01100', '00000', '00000'],
+};
+
+const GW = 5;
+const GH = 7;
+const ADV = 6; // glyph advance: width + 1px tracking
+
+function textWidth(s: string, scale: number): number {
+  return s.length * ADV * scale - scale;
+}
+
+// ---------------------------------------------------------------- canvas --
+type RGB = [number, number, number];
+
+const PAPER: RGB = [247, 243, 232];
+const INK: RGB = [20, 20, 20];
+const RED: RGB = [200, 16, 46];
+const BLUE: RGB = [27, 79, 114];
+const GREEN: RGB = [30, 120, 60];
+const GREY: RGB = [110, 108, 100];
+const LIGHT: RGB = [232, 227, 214];
+const SEA: RGB = [206, 226, 240];
+const LANDC: RGB = [150, 178, 120];
+const CREAM: RGB = [255, 250, 235];
+const GOLD: RGB = [176, 132, 32];
+
+class Canvas {
+  w: number;
+  h: number;
+  buf: Uint8Array; // RGB, row-major
+  constructor(w: number, h: number, bg: RGB) {
+    this.w = w;
+    this.h = h;
+    this.buf = new Uint8Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      this.buf[i * 3] = bg[0];
+      this.buf[i * 3 + 1] = bg[1];
+      this.buf[i * 3 + 2] = bg[2];
+    }
+  }
+  px(x: number, y: number, c: RGB): void {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
+    const i = (y * this.w + x) * 3;
+    this.buf[i] = c[0];
+    this.buf[i + 1] = c[1];
+    this.buf[i + 2] = c[2];
+  }
+  rect(x: number, y: number, w: number, h: number, c: RGB): void {
+    for (let yy = y; yy < y + h; yy++)
+      for (let xx = x; xx < x + w; xx++) this.px(xx, yy, c);
+  }
+  frame(x: number, y: number, w: number, h: number, c: RGB, t = 1): void {
+    this.rect(x, y, w, t, c);
+    this.rect(x, y + h - t, w, t, c);
+    this.rect(x, y, t, h, c);
+    this.rect(x + w - t, y, t, h, c);
+  }
+  hline(x: number, y: number, w: number, c: RGB, t = 1): void {
+    this.rect(x, y, w, t, c);
+  }
+  line(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
+    const dx = Math.abs(x1 - x0);
+    const dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    let x = x0;
+    let y = y0;
+    for (;;) {
+      this.px(x, y, c);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y += sy;
+      }
+    }
+  }
+  circle(cx: number, cy: number, r: number, c: RGB): void {
+    for (let y = -r; y <= r; y++)
+      for (let x = -r; x <= r; x++)
+        if (x * x + y * y <= r * r) this.px(cx + x, cy + y, c);
+  }
+  ring(cx: number, cy: number, r: number, c: RGB): void {
+    for (let a = 0; a < 360; a += 2) {
+      const t = (a * Math.PI) / 180;
+      this.px(Math.round(cx + r * Math.cos(t)), Math.round(cy + r * Math.sin(t)), c);
+    }
+  }
+  ellipse(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
+    for (let y = -ry; y <= ry; y++)
+      for (let x = -rx; x <= rx; x++)
+        if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1) this.px(cx + x, cy + y, c);
+  }
+  glyph(ch: string, x: number, y: number, s: number, c: RGB): void {
+    const g = FONT[ch] ?? FONT['?'];
+    if (!g) return;
+    for (let r = 0; r < GH; r++) {
+      const row = g[r];
+      for (let col = 0; col < GW; col++) {
+        if (row[col] === '1') {
+          for (let dy = 0; dy < s; dy++)
+            for (let dx = 0; dx < s; dx++) this.px(x + col * s + dx, y + r * s + dy, c);
+        }
+      }
+    }
+  }
+  text(s: string, x: number, y: number, scale: number, c: RGB): void {
+    const up = s.toUpperCase();
+    for (let i = 0; i < up.length; i++) this.glyph(up[i], x + i * ADV * scale, y, scale, c);
+  }
+  textCenter(s: string, cx: number, y: number, scale: number, c: RGB): void {
+    this.text(s, cx - Math.floor(textWidth(s, scale) / 2), y, scale, c);
+  }
+  wrap(s: string, maxChars: number): string[] {
+    const words = s.split(' ');
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of words) {
+      if (cur === '') cur = w;
+      else if (cur.length + 1 + w.length <= maxChars) cur += ' ' + w;
+      else {
+        lines.push(cur);
+        cur = w;
+      }
+    }
+    if (cur !== '') lines.push(cur);
+    return lines;
+  }
+}
+
+// -------------------------------------------------------------------- png --
+// Minimal PNG writer: 8-bit RGB, one IDAT, Sub filter per scanline.
 const CRC_TABLE: Uint32Array = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -33,826 +237,441 @@ function crc32(buf: Buffer): number {
 }
 
 function pngChunk(type: string, data: Buffer): Buffer {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, 'ascii');
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
-  return out;
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td), 0);
+  return Buffer.concat([len, td, crc]);
 }
 
-function encodePng(w: number, h: number, rgb: Buffer): Buffer {
-  const raw = Buffer.alloc(h * (1 + w * 3));
-  for (let y = 0; y < h; y++) {
-    raw[y * (1 + w * 3)] = 0; // filter: None
-    rgb.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
-  }
+function encodePNG(cv: Canvas): Buffer {
+  const w = cv.w;
+  const h = cv.h;
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
   ihdr.writeUInt32BE(h, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // colour type: truecolour RGB
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
+  ihdr[9] = 2; // colour type 2 = RGB
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    const rowOff = y * (1 + w * 3);
+    raw[rowOff] = 1; // Sub filter
+    for (let x = 0; x < w; x++) {
+      const src = (y * w + x) * 3;
+      const dst = rowOff + 1 + x * 3;
+      for (let b = 0; b < 3; b++) {
+        const left = x === 0 ? 0 : cv.buf[src - 3 + b];
+        raw[dst + b] = (cv.buf[src + b] - left) & 0xff;
+      }
+    }
+  }
+  const idat = deflateSync(raw, { level: 9 });
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', deflateSync(raw, { level: 9 })),
+    pngChunk('IDAT', idat),
     pngChunk('IEND', Buffer.alloc(0)),
   ]);
 }
 
-// ---------------------------------------------------------------- 5x7 font
-// Each glyph: 7 rows of 5 bits, '#' = ink. Authored for this entry.
-const GLYPHS: Record<string, string[]> = {
-  ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
-  '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
-  '"': ['.#.#.', '.#.#.', '.....', '.....', '.....', '.....', '.....'],
-  '#': ['.#.#.', '.#.#.', '#####', '.#.#.', '#####', '.#.#.', '.#.#.'],
-  '$': ['..#..', '.####', '#.#.#', '.###.', '..#.#', '####.', '..#..'],
-  '%': ['##..#', '##.#.', '....#', '...#.', '..#..', '.#...', '#..##'],
-  '&': ['.##..', '#..#.', '#.#..', '.#...', '#.#.#', '#..#.', '.##.#'],
-  "'": ['..#..', '..#..', '.#...', '.....', '.....', '.....', '.....'],
-  '(': ['...#.', '..#..', '.#...', '.#...', '.#...', '..#..', '...#.'],
-  ')': ['.#...', '..#..', '...#.', '...#.', '...#.', '..#..', '.#...'],
-  '*': ['.....', '..#..', '#.#.#', '.###.', '#.#.#', '..#..', '.....'],
-  '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
-  ',': ['.....', '.....', '.....', '.....', '.##..', '..#..', '.#...'],
-  '-': ['.....', '.....', '.....', '.####', '.....', '.....', '.....'],
-  '.': ['.....', '.....', '.....', '.....', '.....', '.##..', '.##..'],
-  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
-  '0': ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
-  '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
-  '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
-  '3': ['.####', '....#', '....#', '.###.', '....#', '....#', '.####'],
-  '4': ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
-  '5': ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
-  '6': ['..##.', '.#...', '#....', '####.', '#...#', '#...#', '.###.'],
-  '7': ['#####', '....#', '...#.', '..#..', '.#...', '.#...', '.#...'],
-  '8': ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
-  '9': ['.###.', '#...#', '#...#', '.####', '....#', '...#.', '.##..'],
-  ':': ['.....', '.##..', '.##..', '.....', '.##..', '.##..', '.....'],
-  ';': ['.....', '.##..', '.##..', '.....', '.##..', '..#..', '.#...'],
-  '<': ['...#.', '..#..', '.#...', '#....', '.#...', '..#..', '...#.'],
-  '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
-  '>': ['.#...', '..#..', '...#.', '....#', '...#.', '..#..', '.#...'],
-  '?': ['.###.', '#...#', '....#', '...#.', '..#..', '.....', '..#..'],
-  '@': ['.###.', '#...#', '#.###', '#.#.#', '#.##.', '#....', '.###.'],
-  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
-  B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
-  C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
-  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
-  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
-  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
-  G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.####'],
-  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
-  I: ['.###.', '..#..', '..#..', '..#..', '..#..', '..#..', '.###.'],
-  J: ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
-  K: ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
-  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
-  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
-  N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
-  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
-  Q: ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
-  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
-  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
-  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
-  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
-  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
-  X: ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
-  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
-  Z: ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
-  '[': ['.###.', '.#...', '.#...', '.#...', '.#...', '.#...', '.###.'],
-  ']': ['.###.', '...#.', '...#.', '...#.', '...#.', '...#.', '.###.'],
-  '^': ['..#..', '.#.#.', '#...#', '.....', '.....', '.....', '.....'],
-  _: ['.....', '.....', '.....', '.....', '.....', '.....', '#####'],
-  '`': ['..#..', '..#..', '.#...', '.....', '.....', '.....', '.....'],
-  a: ['.....', '.....', '.###.', '....#', '.####', '#...#', '.####'],
-  b: ['#....', '#....', '####.', '#...#', '#...#', '#...#', '####.'],
-  c: ['.....', '.....', '.###.', '#....', '#....', '#...#', '.###.'],
-  d: ['....#', '....#', '.####', '#...#', '#...#', '#...#', '.####'],
-  e: ['.....', '.....', '.###.', '#...#', '#####', '#....', '.###.'],
-  f: ['..##.', '.#..#', '.#...', '####.', '.#...', '.#...', '.#...'],
-  g: ['.....', '.####', '#...#', '#...#', '.####', '....#', '.###.'],
-  h: ['#....', '#....', '####.', '#...#', '#...#', '#...#', '#...#'],
-  i: ['..#..', '.....', '.##..', '..#..', '..#..', '..#..', '.###.'],
-  j: ['...#.', '.....', '..##.', '...#.', '...#.', '#..#.', '.##..'],
-  k: ['#....', '#....', '#..#.', '#.#..', '##...', '#.#..', '#..#.'],
-  l: ['.##..', '..#..', '..#..', '..#..', '..#..', '..#..', '.###.'],
-  m: ['.....', '.....', '##.#.', '#.#.#', '#.#.#', '#.#.#', '#.#.#'],
-  n: ['.....', '.....', '####.', '#...#', '#...#', '#...#', '#...#'],
-  o: ['.....', '.....', '.###.', '#...#', '#...#', '#...#', '.###.'],
-  p: ['.....', '.....', '####.', '#...#', '#...#', '####.', '#....'],
-  q: ['.....', '.....', '.####', '#...#', '#...#', '.####', '....#'],
-  r: ['.....', '.....', '#.##.', '##..#', '#....', '#....', '#....'],
-  s: ['.....', '.....', '.####', '#....', '.###.', '....#', '####.'],
-  t: ['.#...', '.#...', '###..', '.#...', '.#...', '.#..#', '..##.'],
-  u: ['.....', '.....', '#...#', '#...#', '#...#', '#..##', '.##.#'],
-  v: ['.....', '.....', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
-  w: ['.....', '.....', '#...#', '#.#.#', '#.#.#', '#.#.#', '.#.#.'],
-  x: ['.....', '.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#'],
-  y: ['.....', '.....', '#...#', '#...#', '.####', '....#', '.###.'],
-  z: ['.....', '.....', '#####', '...#.', '..#..', '.#...', '#####'],
-  '{': ['...##', '..#..', '..#..', '###..', '..#..', '..#..', '...##'],
-  '|': ['..#..', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
-  '}': ['##...', '..#..', '..#..', '..###', '..#..', '..#..', '##...'],
-  '~': ['.....', '.....', '.#..#', '#.##.', '.....', '.....', '.....'],
-  '–': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
-  '—': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
-  '×': ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
-  '·': ['.....', '.....', '.....', '.....', '.##..', '.##..', '.....'],
-  '°': ['..#..', '.#.#.', '..#..', '.....', '.....', '.....', '.....'],
-};
-// Fallback for any glyph not defined above.
-const BLANK = ['.....', '.....', '.....', '.....', '.....', '.....', '.....'];
+// ------------------------------------------------------------ story data --
+// Every story below happened, or was first reported, on Thursday
+// 26 November 2026, and is named with its source. Scheduled events
+// (parade, chess, football, NFL) fall on that day. Stories from
+// 23-25 Nov are NOT listed here; they are in the DATE CHECK box.
+// Counts: 6 lead stories + 30 briefs = 36 stories, 7 regions, 8 fields.
 
-// ---------------------------------------------------------------- canvas
-const W = 1024;
-const H = 1024;
-type RGB = [number, number, number];
-const PAPER: RGB = [247, 243, 232];
-const INK: RGB = [22, 22, 22];
-const RED: RGB = [178, 32, 44];
-const BLUE: RGB = [29, 78, 137];
-const GREEN: RGB = [30, 122, 52];
-const AMBER: RGB = [176, 104, 0];
-const WHITE: RGB = [255, 255, 255];
-const CREAM2: RGB = [236, 230, 212];
-const RULEC: RGB = [150, 138, 110];
-const GREY: RGB = [96, 96, 96];
-const OCEAN: RGB = [212, 227, 238];
-const LAND: RGB = [146, 170, 143];
-const DARK: RGB = [16, 36, 62];
-
-const img = Buffer.alloc(W * H * 3);
-function setPx(x: number, y: number, c: RGB): void {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3;
-  img[i] = c[0];
-  img[i + 1] = c[1];
-  img[i + 2] = c[2];
-}
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) setPx(xx, yy, c);
-}
-function strokeRect(x: number, y: number, w: number, h: number, c: RGB, t = 1): void {
-  fillRect(x, y, w, t, c);
-  fillRect(x, y + h - t, w, t, c);
-  fillRect(x, y, t, h, c);
-  fillRect(x + w - t, y, t, h, c);
-}
-function hline(x: number, y: number, w: number, c: RGB, t = 1): void {
-  fillRect(x, y, w, t, c);
-}
-function vline(x: number, y: number, h: number, c: RGB, t = 1): void {
-  fillRect(x, y, t, h, c);
-}
-function line(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
-  const dx = Math.abs(x1 - x0);
-  const dy = -Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx + dy;
-  let x = x0;
-  let y = y0;
-  for (;;) {
-    setPx(x, y, c);
-    if (x === x1 && y === y1) break;
-    const e2 = 2 * err;
-    if (e2 >= dy) {
-      err += dy;
-      x += sx;
-    }
-    if (e2 <= dx) {
-      err += dx;
-      y += sy;
-    }
-  }
-}
-function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
-  for (let y = -r; y <= r; y++) {
-    const hw = Math.floor(Math.sqrt(r * r - y * y));
-    for (let x = -hw; x <= hw; x++) setPx(cx + x, cy + y, c);
-  }
-}
-function strokeCircle(cx: number, cy: number, r: number, c: RGB): void {
-  for (let a = 0; a < 360; a += 2) {
-    const rad = (a * Math.PI) / 180;
-    setPx(Math.round(cx + r * Math.cos(rad)), Math.round(cy + r * Math.sin(rad)), c);
-  }
-}
-function fillEllipse(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
-  for (let y = -ry; y <= ry; y++) {
-    const hw = Math.floor((rx * Math.sqrt(ry * ry - y * y)) / ry);
-    for (let x = -hw; x <= hw; x++) setPx(cx + x, cy + y, c);
-  }
-}
-function fillPoly(pts: Array<[number, number]>, c: RGB): void {
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const [, y] of pts) {
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
-    const xs: number[] = [];
-    for (let i = 0; i < pts.length; i++) {
-      const [x0, y0] = pts[i];
-      const [x1, y1] = pts[(i + 1) % pts.length];
-      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
-        xs.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
-      }
-    }
-    xs.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      for (let x = Math.ceil(xs[k]); x <= Math.floor(xs[k + 1]); x++) setPx(x, y, c);
-    }
-  }
-}
-
-// ---------------------------------------------------------------- text
-function glyph(ch: string): string[] {
-  return GLYPHS[ch] ?? BLANK;
-}
-function textWidth(s: string, scale: number): number {
-  // advance = 5*scale + 1 px per character
-  return s.length * (5 * scale + 1) - 1;
-}
-function drawText(x: number, y: number, s: string, scale: number, c: RGB): void {
-  let cx = x;
-  for (const ch of s) {
-    const g = glyph(ch);
-    for (let r = 0; r < 7; r++) {
-      for (let col = 0; col < 5; col++) {
-        if (g[r][col] === '#') fillRect(cx + col * scale, y + r * scale, scale, scale, c);
-      }
-    }
-    cx += 5 * scale + 1;
-  }
-}
-function drawTextCentered(cx: number, y: number, s: string, scale: number, c: RGB): void {
-  drawText(cx - Math.floor(textWidth(s, scale) / 2), y, s, scale, c);
-}
-function wrapText(s: string, maxW: number, scale: number): string[] {
-  const words = s.split(' ');
-  const lines: string[] = [];
-  let cur = '';
-  for (const w of words) {
-    const test = cur ? cur + ' ' + w : w;
-    if (textWidth(test, scale) <= maxW) {
-      cur = test;
-    } else {
-      if (cur) lines.push(cur);
-      cur = w;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines;
-}
-// Small caps-style badge pill.
-function badge(x: number, y: number, label: string, bg: RGB): number {
-  const w = textWidth(label, 1) + 12;
-  fillRect(x, y, w, 13, bg);
-  drawText(x + 6, y + 3, label, 1, WHITE);
-  return w;
-}
-
-// ---------------------------------------------------------------- content
-// All 34 stories verified as 26 November 2026 (event or first report, any zone).
 interface Lead {
   n: number;
   region: string;
-  badgeLabel: string;
-  badgeColor: RGB;
-  title: string;
-  deck: string;
+  head: string[]; // 2 lines, scale 2
+  body: string; // wrapped at scale 1
   source: string;
-  art: 'parade' | 'chess' | 'ball' | null;
+  scene: 'balloon' | 'chess' | 'football' | 'plane' | 'nfl' | 'india';
 }
 
-const LEADS_A: Lead[] = [
+const LEADS: Lead[] = [
   {
     n: 1,
     region: 'USA · NEW YORK',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: "THANKSGIVING: MACY'S 100TH PARADE",
-    deck: '100 inflatables, 11,000 marchers, 8:30am ET. Gusts may ground the giants.',
-    source: "MACY'S INC. · USA TODAY",
-    art: 'parade',
+    head: ['THANKSGIVING:', "MACY'S 100TH PARADE"],
+    body: '100 inflatables, 11,000 marchers, 8:30am ET. Gusts may ground the balloons.',
+    source: "SOURCE: MACY'S INC. · USA TODAY",
+    scene: 'balloon',
   },
   {
     n: 2,
     region: 'SWITZERLAND · GENEVA',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: 'CHESS: GAME 3 FOR THE WORLD CROWN',
-    deck: 'Sindarov has White vs Gukesh, 15:00 CET. Two draws so far — level 1–1.',
-    source: 'FIDE · CHESSBASE',
-    art: 'chess',
+    head: ['CHESS: GAME 3 FOR', 'THE WORLD CROWN'],
+    body: 'Sindarov has White vs Gukesh, 15:00 CET. Two draws so far - level 1-1.',
+    source: 'SOURCE: FIDE · CHESSBASE',
+    scene: 'chess',
   },
   {
     n: 3,
     region: 'EUROPE',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: 'EUROPA LEAGUE: 18 TIES, ONE NIGHT',
-    deck: 'Matchday 5 in two windows, 17:45 and 20:00 UTC. Olympiacos host Milan.',
-    source: 'UEFA',
-    art: 'ball',
+    head: ['EUROPA LEAGUE: 18', 'TIES, ONE NIGHT'],
+    body: 'Matchday 5 in two windows, 17:45 and 20:00 UTC. Olympiacos host Milan.',
+    source: 'SOURCE: UEFA',
+    scene: 'football',
   },
-];
-
-const LEADS_B: Lead[] = [
   {
     n: 4,
     region: 'USA',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: '81.5M ON THE MOVE AS STORMS CLOSE IN',
-    deck: 'AAA: 81.5M travelling 24–30 Nov. FAA: 417,000 flights forecast.',
-    source: 'AAA · FAA',
-    art: null,
+    head: ['81.5M ON THE MOVE', 'AS STORMS CLOSE IN'],
+    body: 'AAA: 81.5M travelling 24-30 Nov. FAA: 417,000 flights forecast.',
+    source: 'SOURCE: AAA · FAA',
+    scene: 'plane',
   },
   {
     n: 5,
     region: 'USA',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: 'NFL: THREE GAMES, ONE TABLE',
-    deck: 'Bears at Lions 1pm, Eagles at Cowboys 4:30pm, Chiefs at Bills 8:20pm ET.',
-    source: 'NFL',
-    art: null,
+    head: ['NFL: THREE GAMES,', 'ONE TABLE'],
+    body: 'Bears at Lions 1pm, Eagles at Cowboys 4:30pm, Chiefs at Bills 8:20pm ET.',
+    source: 'SOURCE: NFL',
+    scene: 'nfl',
   },
   {
     n: 6,
-    region: 'INDIA · DOHA',
-    badgeLabel: 'CONFIRMED',
-    badgeColor: GREEN,
-    title: 'CONSTITUTION DAY — AND A CRICKET SEMI',
-    deck: 'Samvidhan Divas in India; India A face Sri Lanka A in the Rising Stars semi, Doha.',
-    source: 'INDIAN PRESS · SPORTSTAK',
-    art: null,
+    region: 'INDIA · NEW DELHI',
+    head: ['CONSTITUTION DAY -', 'AND AID FOR NEPAL'],
+    body: 'Samvidhan Divas in India; Modi and Nepal PM Shah agree RS 15,000-crore package.',
+    source: 'SOURCE: INDIAN PRESS · REUTERS',
+    scene: 'india',
   },
 ];
 
-// "ALSO ON 26 NOVEMBER" — one-line briefs, numbered 7-34.
-const ALSO: string[] = [
-  'PIA UK FLIGHTS BACK ON OWN 777S — REUTERS',
-  'US MARKETS SHUT FOR THANKSGIVING — REUTERS',
-  "MACY'S BALLOONS MAY BE GROUNDED — USATODAY",
-  "NOR'EASTER HITS EAST COAST — THETRAVELER",
-  "MIAMI'S BUSIEST THANKSGIVING — THETRAVEL",
-  'AIRLINE WAIVERS FOR THE HOLIDAY — QUE.COM',
-  'COLLEGE FOOTBALL: PURDUE–OKLAHOMA — FOX',
-  '6,000 IIT SEATS: ROBOTICS, AI — SELFSTUDYS',
-  'INDIA SPACE ECONOMY $9B–$45B — STUDMENTOR',
-  'BRAZIL: VIRAL CASES DOWN 68% — STUDMENTOR',
-  'OLYMPIACOS–MILAN · 17:45 UTC',
-  'PLZEN–BENFICA · 17:45 UTC',
-  'DINAMO ZAGREB–LEVERKUSEN · 17:45 UTC',
-  'CELTA–BOURNEMOUTH · 17:45 UTC',
-  "BESIKTAS–HAPOEL BE'ER SHEVA · 17:45 UTC",
-  'MARSEILLE–LEVSKI SOFIA · 17:45 UTC',
-  'SALZBURG–ARARAT-ARMENIA · 17:45 UTC',
-  'UNION SG–LECH POZNAN · 17:45 UTC',
-  'CRYSTAL PALACE–REAL SOCIEDAD · 20:00 UTC',
-  'JUVENTUS–OMONIA · 20:00 UTC',
-  'LYON–LILLESTROM · 20:00 UTC',
-  'SUNDERLAND–JAGIELLONIA · 20:00 UTC',
-  'SPARTA PRAHA–AZ ALKMAAR · 20:00 UTC',
-  'HOFFENHEIM–STURM GRAZ · 20:00 UTC',
-  'FERENCVAROS–CELJE · 20:00 UTC',
-  'OFI–ANDERLECHT · 20:00 UTC',
-  'NEC–RENNES · 20:00 UTC',
-  'TORREENSE–CELTIC · 20:00 UTC',
+// Briefs 7-36: one line each at scale 2 (kept short on purpose).
+const BRIEFS: string[] = [
+  'US MARKETS SHUT FOR THANKSGIVING',
+  'US CONSUMER CONFIDENCE NEAR 2-YR HIGH',
+  'CANADA HOLDS INFLATION STRATEGY',
+  'EL SALVADOR $860M YEAR-END DEBT PLAN',
+  'COLOMBIA: 10 YEARS SINCE PEACE ACCORD',
+  'VENEZUELA REVEALS $237.5BN PUBLIC DEBT',
+  'BRAZIL: VIRAL CASES DOWN 68%',
+  'IRELAND IN NEUTRALITY SHOWDOWN',
+  'POLAND FLAGS AIRSPACE VIOLATIONS',
+  'RUSSIA RAISES DEFENCE ALLOCATIONS',
+  'UKRAINE, HUNGARY RENEW ECONOMIC TIES',
+  'IITS ADD 6,000 TECH SEATS FROM 2027',
+  'INDIA SPACE ECONOMY $9BN TO $45BN',
+  'INDIA: HUMAN CONTROL OVER AI IN WARFARE',
+  'INDIA CONDEMNS RIYADH ATTACK, 2 HURT',
+  "PAKISTAN'S FIRST ASTRONAUT TO TIANGONG",
+  'BANGLADESH GARMENT WAGE UP 36%',
+  'HASINA SEEKS RETURN TO DHAKA ON 16 DEC',
+  'N. KOREA TELLS SWITZERLAND: SHUT OFFICE',
+  'TAIWAN ANSWERS US TARIFF PLAN',
+  'IPL 2027 AUCTION: 1,220 PLAYERS REGISTER',
+  'SOORYAVANSHI SMASHES 204 OFF 53 VS UAE',
+  'FLIPKART CEO TO STEP DOWN IN DECEMBER',
+  'EGYPT: SUEZ CANAL REVENUES RECOVERING',
+  'ETHIOPIA PUSHES HEALTHCARE INDEPENDENCE',
+  'EMIRATES TOPS GLOBAL AIRLINE RANKINGS',
+  'TUITION PAID IN COCONUTS, KIDS IN SCHOOL',
+  'EUROPA 17:45 UTC: 8 TIES INC MILAN',
+  'EUROPA 20:00 UTC: 10 TIES INC JUVENTUS',
+  'EUROPA: BENFICA, BOURNEMOUTH ON 12 PTS',
 ];
 
-// DATE CHECK — big stories deliberately LEFT OUT: they happened 23-25 Nov.
-const DATE_CHECK: string[] = [
-  'Shenzhou-24 launch — 25 Nov',
-  'Cairo tanker fire, 31 dead — 25 Nov',
-  'Sudan drone strikes, 19 dead — 25 Nov',
-  'Bangladesh wage hike +36% — 25 Nov',
-  'N. Korea expels Swiss envoy — 25 Nov',
-  'Gaza strike kills Hamas chief — 25 Nov',
-  'Ramaphosa wins Phala Phala — 25 Nov',
-  'Hera asteroid crater images — 25 Nov',
-  'Netanyahu charges eased — 25 Nov',
-  'BepiColombo at Mercury — 23 Nov',
-  'COP31 talks collapse — 23 Nov',
-  'Nvidia reinstates Huang — 23 Nov',
-  'Colombia peace deal, 10 yrs — 24 Nov',
-  'Venezuela debt $237.5B — 24 Nov',
-  'IPL auction register — 25 Nov',
-  'Hasina plans Dec 16 return — 24 Nov',
-  'Sooryavanshi 204 off 53 — 24 Nov',
-  'Lebanon 2nd airport plan — 25 Nov',
+const BRIEF_SOURCES =
+  'SOURCES: REUTERS · UEFA · NFL · FIDE · CHESSBASE · AAA · FAA · SELFSTUDYS · STUDMENTOR · LIBRE NEWS · SIMPLELIFE · SPORTNEWS';
+
+const NUMBERS: [string, string][] = [
+  ['81.5M', 'Americans travelling 24-30 Nov'],
+  ['417,000', 'flights forecast, busiest in 16 yrs'],
+  ['100', "inflatables in Macy's 100th parade"],
+  ['18', 'Europa League ties tonight'],
+  ['3', 'NFL games on Thanksgiving Day'],
+  ['6,000', 'new IIT seats in robotics, AI, space'],
+  ['1,220', 'players register for IPL 2027 auction'],
 ];
 
-// ---------------------------------------------------------------- art
-function drawParadeArt(x: number, y: number, w: number, h: number): void {
-  // City skyline + one big balloon.
-  fillRect(x, y, w, h, [214, 228, 238]);
-  const base = y + h;
-  const towers: Array<[number, number, number]> = [
-    [0, 46, 30],
-    [16, 34, 22],
-    [34, 52, 26],
-    [56, 30, 30],
-    [80, 44, 22],
-  ];
-  for (const [tx, th, tw] of towers) {
-    fillRect(x + Math.floor((tx / 100) * w), base - Math.floor((th / 100) * h), Math.floor((tw / 100) * w), Math.floor((th / 100) * h), DARK);
-  }
-  // Balloon: round body, basket, strings — sized to stay inside the art box.
-  const bx = x + Math.floor(w * 0.62);
-  const by = y + Math.floor(h * 0.3);
-  fillEllipse(bx, by, 20, 15, RED);
-  fillEllipse(bx - 6, by - 3, 8, 6, [214, 64, 76]);
-  line(bx - 9, by + 12, bx - 5, by + 22, INK);
-  line(bx + 9, by + 12, bx + 5, by + 22, INK);
-  fillRect(bx - 6, by + 22, 12, 6, [120, 84, 40]);
-  // Small second balloon.
-  fillEllipse(x + Math.floor(w * 0.2), y + Math.floor(h * 0.28), 10, 8, BLUE);
-  // Confetti dots.
-  const dots: Array<[number, number, RGB]> = [
-    [0.1, 0.15, RED],
-    [0.3, 0.1, BLUE],
-    [0.5, 0.2, GREEN],
-    [0.85, 0.12, RED],
-    [0.92, 0.3, BLUE],
-    [0.42, 0.42, AMBER],
-  ];
-  for (const [fx, fy, c] of dots) fillRect(x + Math.floor(fx * w), y + Math.floor(fy * h), 3, 3, c);
-}
+// Near-miss stories from 23-25 Nov, deliberately LEFT OUT.
+const DATE_CHECK: [string, string][] = [
+  ['BEPICOLOMBO AT MERCURY', '23 NOV'],
+  ['COP31 TALKS COLLAPSE', '23 NOV'],
+  ['NVIDIA REINSTATES HUANG', '23 NOV'],
+  ['CAIRO TANKER FIRE, 31 DEAD', '25 NOV'],
+  ['NETANYAHU JUDGES URGE DROP CASE', '25 NOV'],
+  ['HOUTHI CLAIM SAUDI REFINERY HIT', '25 NOV'],
+  ['AUSTRALIA-SOLOMONS PACT SIGNED', '25 NOV'],
+  ['US TARIFFS PLAN UNVEILED', '25 NOV'],
+  ['TAIWAN SHARES FALL 1,927 PTS', '25 NOV'],
+  ['HERA ASTEROID CRATER IMAGES', '25 NOV'],
+];
 
-function drawChessArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, CREAM2);
-  const n = 6;
-  const s = Math.floor(Math.min(w, h - 4) / n);
-  const ox = x + Math.floor((w - s * n) / 2);
-  const oy = y + Math.floor((h - s * n) / 2);
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
-      fillRect(ox + c * s, oy + r * s, s, s, (r + c) % 2 === 0 ? WHITE : INK);
-    }
-  }
-  strokeRect(ox, oy, s * n, s * n, INK, 2);
-  // Two kings facing off.
-  fillCircle(ox + Math.floor(s * 1.5), oy + Math.floor(s * 1.5), Math.floor(s * 0.42), RED);
-  drawText(ox + Math.floor(s * 1.5) - 3, oy + Math.floor(s * 1.5) - 4, 'K', 1, WHITE);
-  fillCircle(ox + Math.floor(s * 4.5), oy + Math.floor(s * 4.5), Math.floor(s * 0.42), BLUE);
-  drawText(ox + Math.floor(s * 4.5) - 3, oy + Math.floor(s * 4.5) - 4, 'K', 1, WHITE);
-}
+const NOT_YET =
+  'NOT YET: BLACK FRIDAY SALES (28 NOV) · F1 QATAR GP PRACTICE (27 NOV) · CHESS REST DAY (27 NOV) · IPL AUCTION (16 DEC) · HASINA RETURN (16 DEC) · LEBANON FLIGHTS (14 DEC)';
 
-function drawBallArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, [214, 228, 238]);
+// ------------------------------------------------------------------- map --
+// Coarse world land mask, equirectangular, 60 cols (lon -180..180) x 26
+// rows (lat ~87..-58). Spans are [firstCol, lastCol] per row, hand-drawn.
+const LAND: Record<number, [number, number][]> = {
+  1: [[10, 16], [18, 20]],
+  2: [[6, 16], [18, 20], [33, 50]],
+  3: [[5, 17], [18, 19], [29, 31], [32, 55]],
+  4: [[8, 17], [27, 27], [29, 31], [32, 56]],
+  5: [[9, 16], [27, 28], [28, 33], [34, 55]],
+  6: [[8, 16], [27, 34], [36, 50]],
+  7: [[8, 17], [28, 34], [36, 48], [49, 53]],
+  8: [[9, 17], [28, 35], [36, 47], [48, 54]],
+  9: [[9, 17], [28, 35], [36, 40], [42, 52]],
+  10: [[9, 12], [15, 16], [28, 35], [37, 40], [42, 44], [46, 49]],
+  11: [[10, 13], [28, 36], [38, 40], [42, 44], [46, 50]],
+  12: [[11, 13], [28, 36], [43, 43], [46, 49]],
+  13: [[12, 13], [29, 36], [47, 50]],
+  14: [[15, 18], [29, 35], [46, 51]],
+  15: [[15, 19], [30, 35], [47, 52]],
+  16: [[15, 19], [30, 34], [48, 54]],
+  17: [[15, 19], [30, 34], [49, 53]],
+  18: [[15, 19], [30, 33], [35, 35], [48, 54]],
+  19: [[15, 18], [30, 33], [48, 54]],
+  20: [[15, 18], [30, 32], [49, 53]],
+  21: [[15, 17], [30, 32], [49, 52], [55, 56]],
+  22: [[15, 16], [55, 55]],
+  23: [[15, 16]],
+  24: [[15, 15]],
+};
+const MAP_COLS = 60;
+const MAP_ROWS = 26;
+
+// [lon, lat] of the stories dotted on the map.
+const DOTS: [number, number][] = [
+  [-74, 41], [-77, 39], [-76, 45], [-89, 14], [-74, 5], [-67, 11],
+  [-47, -24], [-6, 53], [21, 52], [38, 56], [31, 50], [6, 46],
+  [24, 38], [77, 29], [73, 34], [90, 24], [85, 28], [126, 39],
+  [122, 25], [47, 25], [31, 30], [39, 9],
+];
+
+// ------------------------------------------------------------ scene art --
+function drawScene(cv: Canvas, kind: Lead['scene'], x: number, y: number, w: number, h: number): void {
+  cv.rect(x, y, w, h, [214, 234, 240]); // sky panel
   const cx = x + Math.floor(w / 2);
   const cy = y + Math.floor(h / 2);
-  const r = Math.floor(Math.min(w, h) * 0.36);
-  fillCircle(cx, cy, r, WHITE);
-  strokeCircle(cx, cy, r, INK);
-  // Centre pentagon.
-  const pr = Math.floor(r * 0.42);
-  const pent: Array<[number, number]> = [];
-  for (let i = 0; i < 5; i++) {
-    const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
-    pent.push([cx + Math.floor(pr * Math.cos(a)), cy + Math.floor(pr * Math.sin(a))]);
-  }
-  fillPoly(pent, INK);
-  for (let i = 0; i < 5; i++) {
-    const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
-    line(cx + Math.floor(pr * Math.cos(a)), cy + Math.floor(pr * Math.sin(a)), cx + Math.floor(r * 0.95 * Math.cos(a)), cy + Math.floor(r * 0.95 * Math.sin(a)), INK);
-  }
-  // Grass line.
-  fillRect(x, y + h - 8, w, 8, [90, 140, 80]);
-}
-
-// ---------------------------------------------------------------- map
-interface City {
-  lon: number;
-  lat: number;
-  n?: number;
-}
-const MAP_CITIES: City[] = [
-  { lon: -74, lat: 40.7, n: 1 }, // New York — parade
-  { lon: 6.1, lat: 46.2, n: 2 }, // Geneva — chess
-  { lon: 23.6, lat: 37.9, n: 3 }, // Piraeus — Europa League
-  { lon: -80.2, lat: 25.8, n: 4 }, // Miami — travel
-  { lon: -96.8, lat: 32.8, n: 5 }, // Dallas — NFL
-  { lon: 77.2, lat: 28.6, n: 6 }, // New Delhi — India
-  { lon: -78.9, lat: 42.9 }, // Buffalo
-  { lon: 51.5, lat: 25.3 }, // Doha
-  { lon: -46.6, lat: -23.5 }, // Sao Paulo
-  { lon: 13.4, lat: 49.7 }, // Plzen
-  { lon: 16, lat: 45.8 }, // Zagreb
-  { lon: -8.7, lat: 42.2 }, // Vigo
-  { lon: 29, lat: 41 }, // Istanbul
-  { lon: 5.4, lat: 43.3 }, // Marseille
-  { lon: 13, lat: 47.8 }, // Salzburg
-  { lon: 4.35, lat: 50.85 }, // Brussels
-  { lon: -0.1, lat: 51.5 }, // London
-  { lon: 7.7, lat: 45.1 }, // Turin
-  { lon: 4.8, lat: 45.75 }, // Lyon
-  { lon: -1.38, lat: 54.9 }, // Sunderland
-  { lon: 14.4, lat: 50.1 }, // Prague
-  { lon: 8.9, lat: 49.25 }, // Sinsheim
-];
-
-function drawMap(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, OCEAN);
-  const px = (lon: number): number => x + Math.floor(((lon + 180) / 360) * w);
-  const py = (lat: number): number => y + Math.floor(((85 - lat) / 145) * h);
-  const poly = (pts: Array<[number, number]>): void =>
-    fillPoly(
-      pts.map(([lo, la]) => [px(lo), py(la)] as [number, number]),
-      LAND,
-    );
-  // North America
-  poly([
-    [-168, 66], [-140, 70], [-125, 71], [-110, 68], [-95, 69], [-85, 66], [-80, 73],
-    [-65, 60], [-55, 52], [-60, 47], [-70, 44], [-75, 39], [-80, 32], [-81, 26],
-    [-84, 30], [-90, 21], [-97, 16], [-94, 17], [-105, 20], [-110, 23], [-115, 29],
-    [-120, 34], [-125, 40], [-125, 48], [-132, 58], [-150, 60], [-165, 60],
-  ]);
-  // Greenland
-  poly([[-58, 64], [-45, 60], [-40, 65], [-30, 68], [-22, 70], [-30, 76], [-45, 76], [-58, 74]]);
-  // South America
-  poly([
-    [-80, 9], [-75, 10], [-70, 12], [-62, 10], [-52, 5], [-50, 0], [-44, -3],
-    [-35, -8], [-40, -20], [-48, -28], [-52, -33], [-58, -38], [-65, -45], [-68, -52],
-    [-70, -55], [-73, -50], [-73, -40], [-72, -30], [-70, -18], [-77, -12], [-80, -5], [-81, 0],
-  ]);
-  // Europe
-  poly([
-    [-10, 36], [-9, 43], [-2, 44], [-1, 46], [-4, 48], [-1, 50], [2, 51], [5, 53],
-    [8, 55], [8, 57], [10, 59], [5, 60], [5, 62], [10, 64], [18, 69], [25, 71],
-    [30, 70], [35, 68], [40, 67], [45, 68], [50, 69], [55, 68], [60, 69], [65, 68],
-    [68, 66], [62, 62], [58, 58], [52, 55], [48, 52], [44, 50], [40, 48], [36, 46],
-    [32, 45], [28, 44], [24, 40], [22, 37], [26, 38], [30, 36], [33, 36], [36, 36],
-    [30, 36], [27, 37], [23, 36], [19, 38], [16, 39], [12, 42], [8, 38], [3, 38],
-    [-1, 37], [-6, 36],
-  ]);
-  // Africa
-  poly([
-    [-17, 15], [-16, 20], [-15, 27], [-10, 31], [-5, 35], [0, 36], [10, 37], [11, 34],
-    [15, 32], [20, 32], [25, 32], [30, 31], [32, 31], [34, 28], [35, 23], [37, 18],
-    [40, 15], [43, 12], [48, 11], [51, 12], [48, 5], [42, 0], [40, -5], [40, -12],
-    [36, -18], [33, -26], [28, -33], [20, -35], [17, -32], [15, -27], [12, -18],
-    [12, -10], [9, -1], [9, 4], [-8, 4], [-13, 8], [-17, 12],
-  ]);
-  // Asia
-  poly([
-    [68, 66], [75, 72], [80, 73], [90, 75], [100, 76], [110, 74], [120, 73], [130, 72],
-    [140, 72], [150, 70], [160, 70], [170, 66], [178, 65], [170, 60], [162, 56],
-    [158, 52], [150, 59], [142, 55], [140, 50], [135, 43], [130, 42], [127, 40],
-    [122, 38], [120, 32], [122, 28], [118, 25], [110, 20], [108, 15], [105, 10],
-    [103, 8], [100, 7], [98, 10], [95, 15], [92, 20], [88, 22], [85, 19], [80, 15],
-    [77, 8], [75, 12], [72, 20], [68, 23], [65, 25], [60, 25], [57, 26], [54, 26],
-    [52, 28], [50, 29], [48, 30], [44, 29], [42, 25], [40, 20], [38, 18], [35, 15],
-    [33, 12], [38, 10], [42, 12], [44, 15], [48, 14], [52, 15], [55, 17], [58, 20],
-    [60, 23], [62, 25], [66, 25], [68, 24], [70, 26], [72, 30], [74, 35], [74, 40],
-    [72, 45], [70, 50], [68, 55], [66, 60], [64, 64], [62, 66],
-  ]);
-  // Australia
-  poly([
-    [114, -22], [114, -30], [115, -35], [120, -34], [124, -33], [129, -32], [132, -32],
-    [135, -35], [137, -35], [140, -38], [142, -39], [145, -38], [147, -39], [150, -37],
-    [153, -32], [153, -27], [151, -24], [146, -19], [142, -15], [142, -11], [137, -12],
-    [135, -15], [132, -12], [130, -13], [126, -14], [122, -17], [118, -20],
-  ]);
-  // UK + Japan + islands as small blobs.
-  poly([[-5, 50], [-3, 53], [-5, 56], [-3, 58], [-1, 57], [0, 53], [1, 51]]);
-  poly([[130, 31], [132, 33], [135, 34], [137, 35], [139, 35], [140, 38], [141, 41], [143, 43], [145, 44], [142, 42], [140, 39]]);
-  fillEllipse(px(114), py(0), 8, 4, LAND); // Borneo
-  fillEllipse(px(102), py(-2), 6, 3, LAND); // Sumatra
-  fillEllipse(px(110), py(-7), 7, 2, LAND); // Java
-  fillEllipse(px(141), py(-5), 9, 4, LAND); // New Guinea
-  // City dots.
-  for (const c of MAP_CITIES) {
-    const cx = px(c.lon);
-    const cy = py(c.lat);
-    if (c.n !== undefined) {
-      fillCircle(cx, cy, 7, RED);
-      strokeCircle(cx, cy, 7, WHITE);
-      drawText(cx - 3, cy - 4, String(c.n), 1, WHITE);
-    } else {
-      fillCircle(cx, cy, 3, RED);
-    }
-  }
-}
-
-// ---------------------------------------------------------------- layout
-const MX = 8; // page margin
-const PW = W - 2 * MX; // 1008
-
-function drawLeadPanel(l: Lead, x: number, y: number, w: number, h: number, titleScale: number): void {
-  fillRect(x, y, w, h, WHITE);
-  strokeRect(x, y, w, h, INK, 2);
-  const ix = x + 8;
-  const iw = w - 16;
-  // Header: number badge, region, verification badge.
-  fillRect(ix, y + 8, 20, 20, RED);
-  drawText(ix + (l.n < 10 ? 7 : 4), y + 14, String(l.n), 2, WHITE);
-  drawText(ix + 26, y + 14, l.region, 2, BLUE);
-  const bw = textWidth(l.badgeLabel, 1) + 12;
-  fillRect(x + w - 8 - bw, y + 8, bw, 13, l.badgeColor);
-  drawText(x + w - 8 - bw + 6, y + 11, l.badgeLabel, 1, WHITE);
-  let cy = y + 34;
-  // Art strip (row A only).
-  if (l.art) {
-    const ah = 52;
-    if (l.art === 'parade') drawParadeArt(ix, cy, iw, ah);
-    if (l.art === 'chess') drawChessArt(ix, cy, iw, ah);
-    if (l.art === 'ball') drawBallArt(ix, cy, iw, ah);
-    strokeRect(ix, cy, iw, ah, INK, 1);
-    cy += ah + 6;
-  }
-  // Title, wrapped, max 2 lines.
-  const titleLines = wrapText(l.title, iw, titleScale).slice(0, 2);
-  for (const tl of titleLines) {
-    drawText(ix, cy, tl, titleScale, INK);
-    cy += titleScale === 3 ? 25 : 19;
-  }
-  cy += 2;
-  // Deck, wrapped, hard-capped at 3 lines so it can never hit the source line.
-  const deckLines = wrapText(l.deck, iw, 2);
-  if (deckLines.length > 3) {
-    deckLines.length = 3;
-    const last = deckLines[2];
-    deckLines[2] = last.length > 3 ? last.slice(0, -3) + '...' : last;
-  }
-  for (const dl of deckLines) {
-    drawText(ix, cy, dl, 2, INK);
-    cy += 17;
-  }
-  // Source line, pinned to the panel bottom.
-  drawText(ix, y + h - 16, 'SOURCE: ' + l.source, 1, GREY);
-}
-
-function drawNumbersBox(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, WHITE);
-  strokeRect(x, y, w, h, INK, 2);
-  drawText(x + 8, y + 6, 'THE DAY IN NUMBERS', 2, RED);
-  hline(x + 8, y + 22, w - 16, RULEC, 1);
-  const stats: Array<[string, string]> = [
-    ['81.5M', 'Americans travelling 24-30 Nov'],
-    ['417,000', 'flights forecast, busiest in 16 yrs'],
-    ['100', "inflatables in Macy's 100th parade"],
-    ['18', 'Europa League ties tonight'],
-    ['3', 'NFL games on Thanksgiving Day'],
-  ];
-  let cy = y + 28;
-  for (const [num, label] of stats) {
-    drawText(x + 8, cy, num, 2, RED);
-    drawText(x + 96, cy, label, 2, INK);
-    cy += 16;
-  }
-}
-
-function drawDateCheck(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, CREAM2);
-  strokeRect(x, y, w, h, INK, 2);
-  drawText(x + 8, y + 6, 'DATE CHECK — LEFT OUT ON PURPOSE', 2, RED);
-  const colW = Math.floor((w - 16) / 2);
-  let idx = 0;
-  for (let col = 0; col < 2; col++) {
-    for (let row = 0; row < 9; row++) {
-      if (idx >= DATE_CHECK.length) break;
-      drawText(x + 8 + col * colW, y + 19 + row * 9, 'x ' + DATE_CHECK[idx], 1, INK);
-      idx++;
-    }
-  }
-}
-
-function render(): Buffer {
-  fillRect(0, 0, W, H, PAPER);
-
-  // ---- Masthead
-  drawTextCentered(W / 2, 6, 'THE WORLD IN ONE DAY · MAKE.FUN NEWS-IMAGE', 2, RED);
-  drawTextCentered(W / 2, 24, 'THURSDAY 26 NOVEMBER 2026', 4, INK);
-  drawTextCentered(W / 2, 56, '34 DATED STORIES · 5 REGIONS · 7 FIELDS · EVERY STORY FROM TODAY', 2, BLUE);
-  hline(MX, 76, PW, INK, 2);
-
-  // ---- Timeline strip
-  let y = 82;
-  drawText(MX, y, 'THE DAY IN UTC', 2, RED);
-  drawText(MX + textWidth('THE DAY IN UTC', 2) + 16, y, '— ALL TIMES THURSDAY 26 NOVEMBER 2026', 2, GREY);
-  y += 20;
-  const tl1 = ['13:30 PARADE NYC', '14:00 CHESS GENEVA', '17:45 EUROPA x8', '18:00 BEARS-LIONS'];
-  const tl2 = ['20:00 EUROPA x10', '21:30 EAGLES-COWBOYS', '01:20 CHIEFS-BILLS', '81.5M TRAVEL'];
-  drawText(MX, y, tl1.join(' · '), 2, INK);
-  y += 18;
-  drawText(MX, y, tl2.join(' · '), 2, INK);
-  hline(MX, y + 20, PW, RULEC, 1);
-
-  // ---- Lead rows
-  const gap = 8;
-  const colW = Math.floor((PW - 2 * gap) / 3);
-  y = 142;
-  const rowAH = 212;
-  for (let i = 0; i < 3; i++) {
-    drawLeadPanel(LEADS_A[i], MX + i * (colW + gap), y, colW, rowAH, 3);
-  }
-  y += rowAH + gap;
-  const rowBH = 150;
-  for (let i = 0; i < 3; i++) {
-    drawLeadPanel(LEADS_B[i], MX + i * (colW + gap), y, colW, rowBH, 2);
-  }
-  y += rowBH + gap;
-
-  // ---- Map + right column (numbers + date check)
-  const mapY = y;
-  const mapH = 222;
-  const mapW = 500;
-  drawText(MX, mapY, 'WHERE IT HAPPENED', 2, RED);
-  drawMap(MX, mapY + 20, mapW, mapH - 34);
-  strokeRect(MX, mapY + 20, mapW, mapH - 34, INK, 2);
-  drawText(MX, mapY + mapH - 12, '1-6 LEAD STORIES · SMALL DOTS: OTHER STORIES', 1, GREY);
-  const rx = MX + mapW + gap;
-  const rw = PW - mapW - gap;
-  drawNumbersBox(rx, mapY, rw, 112);
-  drawDateCheck(rx, mapY + 120, rw, mapH - 120);
-  y = mapY + mapH + gap;
-
-  // ---- ALSO list
-  drawText(MX, y, 'ALSO ON 26 NOVEMBER', 2, RED);
-  drawText(MX + textWidth('ALSO ON 26 NOVEMBER', 2) + 16, y, '— 28 MORE DATED, SOURCED STORIES', 2, GREY);
-  y += 20;
-  const alsoColW = Math.floor((PW - gap) / 2);
-  const rows = Math.ceil(ALSO.length / 2);
-  for (let i = 0; i < ALSO.length; i++) {
-    const col = i < rows ? 0 : 1;
-    const row = i % rows;
-    const ix = MX + col * (alsoColW + gap);
-    const iy = y + row * 16;
-    const num = String(7 + i);
-    drawText(ix, iy, num, 2, RED);
-    drawText(ix + textWidth(num + ' ', 2), iy, ALSO[i], 2, INK);
-  }
-  y += rows * 16 + 4;
-
-  // ---- Footer
-  drawText(MX, y, 'SOURCES: UEFA · NFL · FIDE · CHESSBASE · MACY\'S · AAA · FAA · REUTERS · USA TODAY · SELFSTUDYS · STUDMENTOR · SPORTSTAK · ESSENTIALLY SPORTS', 1, GREY);
-  y += 11;
-  drawText(MX, y, 'NOT YET: Black Friday sales (28 Nov) · F1 Qatar GP practice (27 Nov) · Chess rest day (27 Nov) · IPL auction (16 Dec) · Hasina return (16 Dec) · Lebanon flights (14 Dec)', 1, GREY);
-
-  return encodePng(W, H, img);
-}
-
-// ---------------------------------------------------------------- validation
-// Layout self-check: every text run must fit its box. Any overflow is logged
-// (and would have shown up as clipped text in v1) instead of silently drawing
-// past a panel edge.
-function validateLayout(): void {
-  const problems: string[] = [];
-  const colW = Math.floor((PW - 2 * 8) / 3);
-  const iw = colW - 16;
-  for (const l of [...LEADS_A, ...LEADS_B]) {
-    const ts = LEADS_A.includes(l) ? 3 : 2;
-    if (wrapText(l.title, iw, ts).length > 2) problems.push(`title wraps >2 lines: ${l.title}`);
-    if (wrapText(l.deck, iw, 2).length > 3) problems.push(`deck wraps >3 lines: ${l.deck}`);
-    if (textWidth(l.region, 2) + 26 + textWidth(l.badgeLabel, 1) + 12 > iw) {
-      problems.push(`header too wide: ${l.region}`);
-    }
-  }
-  const alsoColW = Math.floor((PW - 8) / 2);
-  ALSO.forEach((item, i) => {
-    const w = textWidth(String(7 + i) + ' ' + item, 2);
-    if (w > alsoColW) problems.push(`ALSO #${7 + i} too wide (${w}px > ${alsoColW}px): ${item}`);
-  });
-  for (const item of DATE_CHECK) {
-    if (textWidth('x ' + item, 1) > Math.floor((500 - 16) / 2)) {
-      problems.push(`DATE CHECK too wide: ${item}`);
-    }
-  }
-  if (textWidth('THURSDAY 26 NOVEMBER 2026', 4) > PW) problems.push('masthead date too wide');
-  if (textWidth('34 DATED STORIES · 5 REGIONS · 7 FIELDS · EVERY STORY FROM TODAY', 2) > PW) {
-    problems.push('masthead subline too wide');
-  }
-  for (const row of [
-    '13:30 PARADE NYC · 14:00 CHESS GENEVA · 17:45 EUROPA x8 · 18:00 BEARS-LIONS',
-    '20:00 EUROPA x10 · 21:30 EAGLES-COWBOYS · 01:20 CHIEFS-BILLS · 81.5M TRAVEL',
-  ]) {
-    if (textWidth(row, 2) > PW) problems.push(`timeline row too wide: ${row}`);
-  }
-  if (problems.length) {
-    for (const p of problems) console.warn('LAYOUT: ' + p);
+  if (kind === 'balloon') {
+    cv.rect(x, y + h - 12, w, 12, [52, 58, 74]); // rooftops
+    cv.circle(cx - 34, cy - 6, 9, RED);
+    cv.circle(cx + 6, cy - 10, 13, RED);
+    cv.ellipse(cx + 6, cy - 10, 13, 15, RED);
+    cv.rect(cx - 1, cy + 6, 14, 6, GOLD);
+    cv.circle(cx - 58, cy - 8, 6, BLUE);
+  } else if (kind === 'chess') {
+    const s = 5;
+    const ox = cx - 4 * s;
+    const oy = cy - 4 * s;
+    for (let r = 0; r < 8; r++)
+      for (let c = 0; c < 8; c++)
+        if ((r + c) % 2 === 0) cv.rect(ox + c * s, oy + r * s, s, s, INK);
+    cv.circle(ox + 2 * s + 2, oy + 1 * s + 2, 2, RED);
+    cv.circle(ox + 5 * s + 2, oy + 6 * s + 2, 2, BLUE);
+  } else if (kind === 'football') {
+    cv.rect(x, y + h - 8, w, 8, GREEN); // pitch
+    cv.circle(cx, cy - 2, 15, CREAM);
+    cv.ring(cx, cy - 2, 15, INK);
+    cv.circle(cx, cy - 2, 4, INK);
+    cv.line(cx - 12, cy - 10, cx, cy - 2, INK);
+    cv.line(cx + 12, cy - 10, cx, cy - 2, INK);
+    cv.line(cx - 13, cy + 6, cx, cy - 2, INK);
+    cv.line(cx + 13, cy + 6, cx, cy - 2, INK);
+  } else if (kind === 'plane') {
+    cv.circle(cx + 30, cy - 12, 5, CREAM); // sun
+    cv.line(x + 8, cy + 4, x + w - 8, cy + 4, GREY);
+    cv.line(x + 8, cy + 10, x + w - 8, cy + 10, GREY);
+    // simple jet silhouette
+    cv.ellipse(cx, cy - 2, 26, 5, BLUE);
+    cv.line(cx + 20, cy - 2, cx + 30, cy - 10, BLUE);
+    cv.line(cx - 6, cy - 2, cx - 14, cy - 12, BLUE);
+    cv.line(cx - 6, cy - 2, cx - 14, cy + 8, BLUE);
+  } else if (kind === 'nfl') {
+    cv.rect(x, y + h - 8, w, 8, GREEN);
+    cv.ellipse(cx, cy - 2, 26, 13, [120, 72, 32]);
+    cv.line(cx - 18, cy - 2, cx + 18, cy - 2, CREAM);
+    for (let i = -2; i <= 2; i++) cv.line(cx + i * 6, cy - 6, cx + i * 6, cy + 2, CREAM);
   } else {
-    console.log('layout check: OK (34 stories, all text fits)');
+    // india: tricolour bands + wheel
+    cv.rect(x, y, w, 14, [255, 153, 51]);
+    cv.rect(x, y + 14, w, 14, CREAM);
+    cv.rect(x, y + 28, w, 14, [19, 136, 8]);
+    cv.ring(cx, y + 21, 6, BLUE);
+    cv.circle(cx, y + 21, 1, BLUE);
   }
 }
 
-// ---------------------------------------------------------------- main
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-validateLayout();
-mkdirSync(outDir, { recursive: true });
-const png = render();
-const outPath = join(outDir, 'entry.png');
-writeFileSync(outPath, png);
-const sha = createHash('sha256').update(png).digest('hex');
-console.log(`wrote ${outPath} (${png.length} bytes, sha256 ${sha})`);
+// ---------------------------------------------------------------- layout --
+const W = 1024;
+const H = 1024;
+const MX = 8; // page margin
+
+function drawLead(cv: Canvas, lead: Lead, x: number, y: number, w: number, h: number): void {
+  cv.frame(x, y, w, h, INK, 2);
+  // header: red number box, region, CONFIRMED badge
+  cv.rect(x + 2, y + 2, 22, 16, RED);
+  cv.text(String(lead.n), x + 2 + (22 - textWidth(String(lead.n), 1)) / 2, y + 5, 1, CREAM);
+  cv.text(lead.region, x + 28, y + 5, 1, BLUE);
+  const badge = 'CONFIRMED';
+  const bw = textWidth(badge, 1) + 8;
+  cv.rect(x + w - 2 - bw, y + 2, bw, 16, GREEN);
+  cv.text(badge, x + w - 2 - bw + 4, y + 5, 1, CREAM);
+  // scene
+  drawScene(cv, lead.scene, x + 2, y + 20, w - 4, 44);
+  // headline, two lines at scale 2
+  cv.text(lead.head[0], x + 8, y + 70, 2, INK);
+  cv.text(lead.head[1], x + 8, y + 86, 2, INK);
+  // body, wrapped at scale 1 (51 chars across the panel)
+  const lines = cv.wrap(lead.body, 50).slice(0, 3);
+  lines.forEach((ln, i) => cv.text(ln, x + 8, y + 106 + i * 10, 1, INK));
+  // source
+  cv.text(lead.source, x + 8, y + h - 12, 1, GREY);
+}
+
+function drawMap(cv: Canvas, x: number, y: number, w: number, h: number): void {
+  cv.frame(x, y, w, h, INK, 2);
+  cv.text('WHERE IT HAPPENED', x + 8, y + 5, 1, RED);
+  cv.text('1-6 LEAD STORIES · SMALL DOTS: OTHER STORIES', x + 8, y + h - 12, 1, GREY);
+  const scale = 5;
+  const mw = MAP_COLS * scale;
+  const mh = MAP_ROWS * scale;
+  const ox = x + Math.floor((w - mw) / 2);
+  const oy = y + 20;
+  cv.rect(ox, oy, mw, mh, SEA);
+  for (const [row, spans] of Object.entries(LAND)) {
+    const r = Number(row);
+    for (const [c0, c1] of spans) {
+      cv.rect(ox + c0 * scale, oy + r * scale, (c1 - c0 + 1) * scale, scale, LANDC);
+    }
+  }
+  // story dots: lon/lat -> map pixels (equirectangular)
+  for (const [lon, lat] of DOTS) {
+    const dx = ox + Math.round(((lon + 180) / 360) * mw);
+    const dy = oy + Math.round(((87 - lat) / 145) * mh);
+    cv.circle(dx, dy, 3, RED);
+    cv.ring(dx, dy, 4, CREAM);
+  }
+  // numbered pins for the six leads
+  const pins: [number, number, number][] = [
+    [-74, 41, 1], [6, 46, 2], [24, 38, 3], [-77, 39, 4], [-95, 32, 5], [77, 29, 6],
+  ];
+  for (const [lon, lat, n] of pins) {
+    const dx = ox + Math.round(((lon + 180) / 360) * mw);
+    const dy = oy + Math.round(((87 - lat) / 145) * mh);
+    cv.circle(dx, dy, 6, RED);
+    cv.text(String(n), dx - 3, dy - 3, 1, CREAM);
+  }
+}
+
+function drawNumbers(cv: Canvas, x: number, y: number, w: number, h: number): void {
+  cv.frame(x, y, w, h, INK, 2);
+  cv.text('THE DAY IN NUMBERS', x + 8, y + 5, 1, RED);
+  NUMBERS.forEach(([num, label], i) => {
+    const yy = y + 20 + i * 9;
+    cv.text(num, x + 8, yy, 1, RED);
+    cv.text(label, x + 8 + textWidth(num, 1) + 12, yy, 1, INK);
+  });
+}
+
+function drawDateCheck(cv: Canvas, x: number, y: number, w: number, h: number): void {
+  cv.frame(x, y, w, h, RED, 2);
+  cv.text('DATE CHECK - LEFT OUT ON PURPOSE', x + 8, y + 5, 1, RED);
+  const colW = Math.floor((w - 16) / 2);
+  DATE_CHECK.forEach(([item, when], i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const xx = x + 8 + col * colW;
+    const yy = y + 22 + row * 11;
+    cv.text('X', xx, yy, 1, RED);
+    cv.text(item, xx + 10, yy, 1, INK);
+    cv.text(when, xx + colW - textWidth(when, 1) - 4, yy, 1, GREY);
+  });
+}
+
+function render(): Canvas {
+  const cv = new Canvas(W, H, PAPER);
+  cv.frame(2, 2, W - 4, H - 4, INK, 2);
+
+  // ---- masthead ------------------------------------------------------
+  cv.textCenter('THE WORLD IN ONE DAY · MAKE.FUN NEWS-IMAGE', W / 2, 12, 1, RED);
+  cv.textCenter('THURSDAY 26 NOVEMBER 2026', W / 2, 26, 4, INK);
+  cv.textCenter('36 DATED STORIES · 7 REGIONS · 8 FIELDS · EVERY STORY FROM TODAY', W / 2, 62, 2, BLUE);
+  cv.hline(MX, 84, W - 2 * MX, INK, 2);
+
+  // ---- UTC timeline --------------------------------------------------
+  cv.textCenter('THE DAY IN UTC - ALL TIMES THURSDAY 26 NOVEMBER 2026', W / 2, 92, 1, RED);
+  cv.textCenter('13:30 PARADE NYC · 14:00 CHESS GENEVA · 17:45 EUROPA X8 · 18:00 BEARS-LIONS', W / 2, 104, 2, INK);
+  cv.textCenter('20:00 EUROPA X10 · 21:30 EAGLES-COWBOYS · 01:20 FRI CHIEFS-BILLS', W / 2, 120, 2, INK);
+  cv.textCenter('ALL TIMES UTC; 01:20 IS FRI UTC, THU 8:20PM ET', W / 2, 138, 1, GREY);
+  cv.hline(MX, 150, W - 2 * MX, INK, 1);
+
+  // ---- six lead stories ----------------------------------------------
+  const leadW = Math.floor((W - 2 * MX - 2 * 8) / 3);
+  const leadH = 146;
+  const leadY0 = 156;
+  for (let i = 0; i < 6; i++) {
+    const col = i % 3;
+    const row = Math.floor(i / 3);
+    drawLead(
+      cv,
+      LEADS[i],
+      MX + col * (leadW + 8),
+      leadY0 + row * (leadH + 6),
+      leadW,
+      leadH,
+    );
+  }
+
+  // ---- map + numbers + date check ------------------------------------
+  const midY = 156 + 2 * leadH + 6 + 8; // 462
+  const midH = 168;
+  const mapW = 504;
+  drawMap(cv, MX, midY, mapW, midH);
+  const rightX = MX + mapW + 8;
+  const rightW = W - MX - rightX;
+  drawNumbers(cv, rightX, midY, rightW, 82);
+  drawDateCheck(cv, rightX, midY + 88, rightW, midH - 88);
+
+  // ---- briefs ---------------------------------------------------------
+  const briefY = midY + midH + 8; // 638
+  cv.text('ALSO ON 26 NOVEMBER - 30 MORE DATED, SOURCED STORIES', MX, briefY, 2, RED);
+  const rows = 15;
+  const rowH = 22;
+  const colW = Math.floor((W - 2 * MX) / 2);
+  for (let i = 0; i < BRIEFS.length; i++) {
+    const col = Math.floor(i / rows);
+    const row = i % rows;
+    const bx = MX + col * colW;
+    const by = briefY + 22 + row * rowH;
+    const n = String(7 + i);
+    cv.text(n, bx, by, 2, RED);
+    cv.text(BRIEFS[i], bx + 30, by, 2, INK);
+  }
+
+  // ---- footer ---------------------------------------------------------
+  const footY = briefY + 22 + rows * rowH + 6; // ~996
+  cv.hline(MX, footY, W - 2 * MX, INK, 1);
+  cv.text(BRIEF_SOURCES, MX, footY + 6, 1, GREY);
+  cv.text(NOT_YET, MX, footY + 17, 1, GREY);
+  return cv;
+}
+
+// ------------------------------------------------------------------ main --
+function main(): void {
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+  mkdirSync(outDir, { recursive: true });
+  const cv = render();
+  const png = encodePNG(cv);
+  const outPath = join(outDir, 'entry.png');
+  writeFileSync(outPath, png);
+  const sha = createHash('sha256').update(png).digest('hex');
+  console.log(`wrote ${outPath}`);
+  console.log(`size: ${png.length} bytes (limit 1048576)`);
+  console.log(`dimensions: ${W}x${H}`);
+  console.log(`sha256: ${sha}`);
+  console.log(`stories: 36 (6 leads + 30 briefs), regions: 7, fields: 8`);
+}
+
+main();
